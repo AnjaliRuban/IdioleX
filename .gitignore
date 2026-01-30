@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.DS_Store
 
 # Virtual Environment
 venv/
@@ -32,6 +33,12 @@ ENV/
 *.swo
 
 # Project specific
-*.png
-*.csv
-!data/sample.csv
+.ipynb_checkpoints
+models/
+evals/
+data/*.zip
+*.pth
+*.pt
+wandb/
+logs/
+outputs/

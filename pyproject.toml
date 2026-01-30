@@ -1,42 +1,50 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["starter_repo"]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "starter-repo"
+name = "idiolex"
 version = "0.1.0"
-authors = [
-    { name="Graham Neubig", email="neubig@gmail.com" },
-]
-description = "A starter repository demonstrating Python best practices"
+description = "Hierarchical idiolectal representation learning with contrastive training"
 readme = "README.md"
-license = "MIT"
-requires-python = ">=3.11"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+keywords = ["nlp", "embeddings", "dialect", "contrastive-learning", "pytorch"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
-    "pandas",
-    "matplotlib",
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "scikit-learn>=1.0.0",
+    "wandb>=0.15.0",
+    "numpy>=1.24.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
-    "ruff",
-    "mypy",
-    "pre-commit",
-    "pandas-stubs",
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310", "py311", "py312"]
+
 [tool.ruff]
-line-length = 100
-
-[tool.ruff.lint]
-select = ["E", "F", "I"]
-
-
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
+line-length = 88
+target-version = "py310"
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
+ignore = ["E501"]
