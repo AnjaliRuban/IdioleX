@@ -21,15 +21,13 @@ import json
 import os
 from collections import Counter, defaultdict
 
-from tqdm import tqdm
-
 import fasttext
 import zstandard
+from tqdm import tqdm
+
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Filter Reddit dumps by language."
-    )
+    parser = argparse.ArgumentParser(description="Filter Reddit dumps by language.")
     parser.add_argument(
         "--input_dir",
         type=str,
@@ -66,22 +64,22 @@ def parse_args() -> argparse.Namespace:
 
 def read_zst_lines(file_path: str):
     """Generator to read lines from a .zst compressed file.
-    
+
     Args:
         file_path: Path to .zst file.
-    
+
     Yields:
         Decoded lines from the file.
     """
     with open(file_path, "rb") as f:
         reader = zstandard.ZstdDecompressor(max_window_size=2**31).stream_reader(f)
         buffer = ""
-        
+
         while True:
             chunk = reader.read(2**24)
             if not chunk:
                 break
-            
+
             try:
                 decoded = chunk.decode("utf-8")
             except UnicodeDecodeError:
@@ -91,14 +89,14 @@ def read_zst_lines(file_path: str):
                     decoded = chunk.decode("utf-8")
                 except UnicodeDecodeError:
                     continue
-            
+
             lines = (buffer + decoded).split("\n")
             buffer = lines[-1]
-            
+
             for line in lines[:-1]:
                 if line.strip():
                     yield line.strip()
-        
+
         reader.close()
 
 
@@ -109,13 +107,13 @@ def filter_dump(
     min_length: int,
 ) -> tuple[dict, Counter]:
     """Filter a single dump file by language.
-    
+
     Args:
         input_path: Path to .zst dump file.
         lang_model: Loaded fastText model.
         lang_codes: Set of language codes to keep.
         min_length: Minimum comment length.
-    
+
     Returns:
         Tuple of (author -> comments dict, author counts).
     """
@@ -123,18 +121,18 @@ def filter_dump(
     author_counts = Counter()
     total = 0
     kept = 0
-    
+
     for line in tqdm(read_zst_lines(input_path), desc=os.path.basename(input_path)):
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        
+
         total += 1
-        
+
         author = entry.get("author", "")
         text = entry.get("body", "")
-        
+
         # Skip deleted/removed
         if text in ["[deleted]", "[removed]"]:
             continue
@@ -142,66 +140,70 @@ def filter_dump(
             continue
         if len(text) < min_length:
             continue
-        
+
         # Language filter
         clean_text = text.replace("\n", " ").replace("\r", " ")
         pred = lang_model.predict(clean_text)[0][0]
         lang_code = pred.replace("__label__", "")
-        
+
         if lang_code not in lang_codes:
             continue
-        
+
         kept += 1
-        data[author].append({
-            "text": text,
-            "id": entry.get("id", ""),
-            "subreddit": entry.get("subreddit", ""),
-        })
+        data[author].append(
+            {
+                "text": text,
+                "id": entry.get("id", ""),
+                "subreddit": entry.get("subreddit", ""),
+            }
+        )
         author_counts[author] += 1
-    
+
     print(f"  Kept {kept}/{total} comments ({100*kept/max(total,1):.1f}%)")
     return dict(data), author_counts
 
 
-def main():    
+def main():
     args = parse_args()
-    
+
     # Load language model
     print(f"Loading fastText model: {args.fasttext_model}")
     lang_model = fasttext.load_model(args.fasttext_model)
-    lang_codes = {f"__label__{c}" if not c.startswith("__label__") else c for c in args.lang_codes}
+    lang_codes = {
+        f"__label__{c}" if not c.startswith("__label__") else c for c in args.lang_codes
+    }
     print(f"Filtering for languages: {lang_codes}")
-    
+
     os.makedirs(args.output_dir, exist_ok=True)
-    
+
     # Process each dump file
     for filename in os.listdir(args.input_dir):
         if not filename.endswith(".zst"):
             continue
         if filename.endswith(".zst.part"):
             continue
-        
+
         print(f"\nProcessing {filename}...")
         input_path = os.path.join(args.input_dir, filename)
-        
+
         # Get subreddit name
         subreddit = filename.split("_")[0].lower()
-        
+
         data, author_counts = filter_dump(
             input_path,
             lang_model,
             lang_codes,
             args.min_length,
         )
-        
+
         print(f"  {len(data)} authors, {sum(author_counts.values())} comments")
-        
+
         # Save data
         output_path = os.path.join(args.output_dir, f"{subreddit}_data.json")
         with open(output_path, "w") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         print(f"  Saved -> {output_path}")
-        
+
         # Save author stats
         stats_path = os.path.join(args.output_dir, f"{subreddit}_authors.json")
         with open(stats_path, "w") as f:

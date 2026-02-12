@@ -41,20 +41,20 @@ See [`preprocessing/README.md`](preprocessing/README.md) for the full data pipel
 Quick start:
 ```bash
 # 1. Filter pushshift data dump
-python preprocessing/filter_reddit_dump.py \
+python idiolex/preprocessing/filter_reddit_dump.py \
     --input_dir data/pushshift/\
     --output_dir data/raw \
     --lang_codes CODE \
     --fasttext_model lid.176.bin
 
 # 2. Process raw Reddit data
-python preprocessing/preprocess_reddit.py \
+python idiolex/preprocessing/preprocess_reddit.py \
     --input_dir data/raw \
     --output_dir data/processed \
     --model FacebookAI/roberta-base
 
 # 3. Add LLM features for pretraining
-python preprocessing/add_features.py \
+python idiolex/preprocessing/add_features.py \
     --input_dir data/processed/train_data \
     --output_dir data/processed/train_data_feats
 ```
@@ -80,7 +80,7 @@ Training data should be organized as JSON files with hierarchical structure:
 
 ```bash
 # Single GPU
-torchrun --nproc_per_node=1 main.py \
+torchrun --nproc_per_node=1 --module idiolex.src.main \
     --tag experiment_name \
     --train_data data/train \
     --dev_data data/dev \
@@ -89,7 +89,7 @@ torchrun --nproc_per_node=1 main.py \
     --mean_center
 
 # Multi-GPU
-torchrun --nproc_per_node=4 main.py \
+torchrun --nproc_per_node=4 --module idiolex.src.main \
     --tag experiment_name \
     --train_data data/train \
     --dev_data data/dev \
@@ -101,7 +101,7 @@ torchrun --nproc_per_node=4 main.py \
 ### Evaluation
 
 ```bash
-torchrun --nproc_per_node=1 main.py \
+torchrun --nproc_per_node=1 --module idiolex.src.main \
     --tag eval_run \
     --dev_data data/test \
     --checkpoint models/experiment_name/checkpoint.pth \

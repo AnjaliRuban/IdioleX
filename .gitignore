@@ -36,9 +36,11 @@ ENV/
 .ipynb_checkpoints
 models/
 evals/
-data/*.zip
+data/
+!data/evalsets
 *.pth
 *.pt
 wandb/
 logs/
 outputs/
+*.sh

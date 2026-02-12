@@ -1,16 +1,16 @@
 """Evaluation utilities for model assessment."""
 
 import argparse
-from typing import Optional
+from typing import Union
 
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset, RandomSampler
 from torch.utils.data.sampler import Sampler
 
-from .data_utils import TripletSampler, make_collator
-from .process import process_batch
-from .utils import (
+from idiolex.src.data_utils import TripletSampler, make_collator
+from idiolex.src.process import process_batch
+from idiolex.src.utils import (
     bce_logits,
     concat_all_gather_no_grad,
     jaccard_weights,
@@ -39,7 +39,7 @@ def get_dataloader(
             batch_size=args.batch_size,
             shuffle=False,
             collate_fn=make_collator(args),
-            num_workers=4,
+            num_workers=0,
         )
     return DataLoader(
         dataset=dataset,
@@ -50,7 +50,7 @@ def get_dataloader(
             mini=args.mini,
         ),
         collate_fn=make_collator(args),
-        num_workers=4,
+        num_workers=0,
     )
 
 
@@ -58,11 +58,11 @@ def evaluate_model(
     model: torch.nn.Module,
     dataset: Dataset,
     args: argparse.Namespace,
-    device_id: int | str,
-    embedding_model: Optional[torch.nn.Module] = None,
-    centering_model: Optional[torch.nn.Module] = None,
-    feat_head: Optional[torch.nn.Module] = None,
-    proj_head: Optional[torch.nn.Module] = None,
+    device_id: Union[int, str],
+    embedding_model: Union[torch.nn.Module, None] = None,
+    centering_model: Union[torch.nn.Module, None] = None,
+    feat_head: Union[torch.nn.Module, None] = None,
+    proj_head: Union[torch.nn.Module, None] = None,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
     """Evaluate model on a dataset.
 
@@ -80,6 +80,14 @@ def evaluate_model(
         Tuple of (avg_loss, avg_mrr, metrics_dict).
     """
     model.eval()
+    if embedding_model:
+        embedding_model.eval()
+    if centering_model:
+        centering_model.eval()
+    if feat_head:
+        feat_head.eval()
+    if proj_head:
+        proj_head.eval()
     dataloader = get_dataloader(dataset, args, sampler_cls=RandomSampler)
 
     if args.evaluate:
@@ -106,14 +114,21 @@ def evaluate_model(
                     eval_mode=True,
                     verbose=args.verbose,
                 )
-                outputs.extend([{
-                    "idx": batch["idxs"][i],
-                    "tags": batch["tags"][i],
-                    "input_ids": batch["input_ids"][i].cpu().tolist(),
-                    "txt_out": t.cpu().tolist(),
-                    "raw_out": r.cpu().tolist(),
-                } for i, t, r in zip(range(len(batch["idxs"])), txt_out, raw_out)])
-                
+                outputs.extend(
+                    [
+                        {
+                            "idx": batch["idxs"][i],
+                            "tags": batch["tags"][i],
+                            "input_ids": batch["input_ids"][i].cpu().tolist(),
+                            "txt_out": t.cpu().tolist(),
+                            "raw_out": r.cpu().tolist(),
+                        }
+                        for i, t, r in zip(
+                            range(len(batch["idxs"])), txt_out, raw_out, strict=False
+                        )
+                    ]
+                )
+
             else:
                 txt_out, raw_out, batch_loss, batch_mrr, batch_metrics = process_batch(
                     model=model,
@@ -155,7 +170,9 @@ def evaluate_model(
                             w = jaccard_weights(feat_bin_local, topk=args.supcon_topk)
 
                     proj_out = proj_head(raw_out)
-                    supcon_loss = supervised_contrastive(proj_out, w, tau=args.supcon_tau)
+                    supcon_loss = supervised_contrastive(
+                        proj_out, w, tau=args.supcon_tau
+                    )
                     feature_loss = 0.25 * pred_loss + supcon_loss
                 else:
                     feature_loss = torch.tensor(0.0, device=device_id)
@@ -167,9 +184,11 @@ def evaluate_model(
                 if args.dev_size is not None and i >= args.dev_size:
                     break
 
-    avg_loss = torch.mean(torch.tensor(loss_values))
-    avg_mrr = torch.mean(torch.tensor(mrr_values))
-    avg_metrics = {k: torch.mean(torch.tensor(v)) for k, v in all_metrics.items()}
+    avg_loss = torch.mean(torch.tensor(loss_values)).to(device_id)
+    avg_mrr = torch.mean(torch.tensor(mrr_values)).to(device_id)
+    avg_metrics = {
+        k: torch.mean(torch.tensor(v)).to(device_id) for k, v in all_metrics.items()
+    }
 
     if args.evaluate:
         return outputs

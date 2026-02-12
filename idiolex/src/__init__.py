@@ -1,7 +1,12 @@
 """Dialect embedding learning with hierarchical contrastive training."""
 
 from .centering import MeanCenterer
-from .data_utils import HierarchicalDataset, StandardDataset, TripletSampler, make_collator
+from .data_utils import (
+    HierarchicalDataset,
+    StandardDataset,
+    TripletSampler,
+    make_collator,
+)
 from .evaluation import evaluate_model, get_dataloader
 from .feature_head import FeatureHead, ProjectionHead
 from .layer_pool import LayerwiseAttention

@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 from collections.abc import Callable, Iterable, Iterator
-from typing import Any
+from typing import Any, Union
 
 import numpy as np
 import torch
@@ -43,9 +43,7 @@ class HierarchicalDataset(Dataset):
         item = self.data[idx]
         return {
             "input_ids": (
-                item["text_ids"][0]
-                if len(item["text_ids"]) == 1
-                else item["text_ids"]
+                item["text_ids"][0] if len(item["text_ids"]) == 1 else item["text_ids"]
             ),
             "feature_vec": (
                 item["feature"]
@@ -97,6 +95,7 @@ class HierarchicalDataset(Dataset):
 
         self.data.extend(dialect_data)
 
+
 class StandardDataset(Dataset):
     """Standard dataset for text data without hierarchical structure or feature vectors (for evaluation).
 
@@ -137,7 +136,7 @@ class TripletSampler(BatchSampler):
 
     def __init__(
         self,
-        sampler: Sampler[int] | Iterable[int],
+        sampler: Union[Sampler[int], Iterable[int]],
         batch_size: int,
         drop_last: bool,
         mini: bool = False,
@@ -155,9 +154,9 @@ class TripletSampler(BatchSampler):
             TypeError: If sampler is not a valid type.
         """
         group_size = 4 if mini else 16
-        assert batch_size % group_size == 0, (
-            f"batch_size must be divisible by {group_size}"
-        )
+        assert (
+            batch_size % group_size == 0
+        ), f"batch_size must be divisible by {group_size}"
 
         if isinstance(sampler, DistributedSampler):
             self.data_source = sampler.dataset
@@ -242,9 +241,7 @@ class TripletSampler(BatchSampler):
         start, end = item["user_idx"]
         new_idx = int(np.random.randint(start, end - comment_length))
         return (
-            new_idx + comment_length
-            if new_idx >= item["comment_idx"][0]
-            else new_idx
+            new_idx + comment_length if new_idx >= item["comment_idx"][0] else new_idx
         )
 
     def _get_same_dialect(self, idx: int) -> int:
@@ -262,9 +259,7 @@ class TripletSampler(BatchSampler):
         end = len(self.data_source) - dialect_length
         new_idx = int(np.random.randint(0, end))
         return (
-            new_idx + dialect_length
-            if new_idx >= item["dialect_idx"][0]
-            else new_idx
+            new_idx + dialect_length if new_idx >= item["dialect_idx"][0] else new_idx
         )
 
 
@@ -281,9 +276,13 @@ def make_collator(
     """
 
     if args.evaluate:
-        def collate_fn(batch: list[dict[str, Any]], pad_token_id: int = 0) -> dict[str, torch.Tensor]:
+
+        def collate_fn(
+            batch: list[dict[str, Any]], pad_token_id: int = 0
+        ) -> dict[str, torch.Tensor]:
             input_ids = pad_sequence(
-                [torch.tensor(b["input_ids"], dtype=torch.long) for b in batch], batch_first=True
+                [torch.tensor(b["input_ids"], dtype=torch.long) for b in batch],
+                batch_first=True,
             )
             input_ids = input_ids[:, : min(input_ids.size(1), args.model_len)]
             input_attn_mask = input_ids != pad_token_id
@@ -297,6 +296,7 @@ def make_collator(
                 "input_attn_mask": input_attn_mask,
             }
     else:
+
         def collate_fn(
             batch: list[dict[str, Any]],
             pad_token_id: int = 0,

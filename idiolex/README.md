@@ -41,20 +41,47 @@ See [`preprocessing/README.md`](preprocessing/README.md) for the full data pipel
 Quick start:
 ```bash
 # 1. Filter pushshift data dump
+
+# Download fastText language ID model first:
+# wget https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin
+
+export ROOT=/path/to/repo/root
+export LANGUAGE=arabic
+export LANG_CODES=ar
+
 python preprocessing/filter_reddit_dump.py \
+    --input_dir $ROOT/data/pushshift/$LANGUAGE \
+    --output_dir $ROOT/data/$LANGUAGE \
+    --lang_codes $LANG_CODES \
+    --fasttext_model lid.176.bin
+
+# 2. Process raw Reddit data
+export BASEMODEL=intfloat/multilingual-e5-large
+export BASEMODELTAG=multilingual-e5-large
+
+python preprocessing/preprocess_reddit.py \
+    --input_dir $ROOT/data/${LANGUAGE} \
+    --output_dir $ROOT/data/${LANGUAGE}_${BASEMODELTAG} \
+    --model $BASEMODEL \
+    --dev_users 10 \
     --input_dir data/pushshift/\
     --output_dir data/raw \
     --lang_codes CODE \
     --fasttext_model lid.176.bin
 
-# 2. Process raw Reddit data
-python preprocessing/preprocess_reddit.py \
-    --input_dir data/raw \
-    --output_dir data/processed \
-    --model FacebookAI/roberta-base
-
 # 3. Add LLM features for pretraining
-python preprocessing/add_features.py \
+export LITELLM_API_KEY=your_key
+export LITELLM_API_BASE_URL=https://api.openai.com/v1  # optional
+
+export FEATMODEL=openai/gpt-5-mini
+export SPLIT=train 
+
+python preprocessing/generate_features.py \
+    --input_dir $ROOT/data/${LANGUAGE}_${BASEMODELTAG}/${SPLIT}_data \
+    --output_dir $ROOT/data/${LANGUAGE}_${BASEMODELTAG}/${SPLIT}_data_with_feats \
+    --model $FEATMODEL \
+    --features $ROOT/idiolex/preprocessing/feature_list/$LANGUAGE.json
+    --batch_size 50
     --input_dir data/processed/train_data \
     --output_dir data/processed/train_data_feats
 ```
@@ -80,22 +107,37 @@ Training data should be organized as JSON files with hierarchical structure:
 
 ```bash
 # Single GPU
-torchrun --nproc_per_node=1 main.py \
-    --tag experiment_name \
-    --train_data data/train \
-    --dev_data data/dev \
-    --base_model FacebookAI/roberta-base \
+torchrun --nproc_per_node=1 --module idiolex.src.main \
+    --tag $EXPERIMENT_NAME \
+    --pretrain_data $ROOT/data/${LANGUAGE}_${BASEMODELTAG}/train_data \
+    --train_data $ROOT/data/${LANGUAGE}_${BASEMODELTAG}/train_data_with_feats \
+    --dev_data $ROOT/data/${LANGUAGE}_${BASEMODELTAG}/dev_data_with_feats \
+    --base_model $BASEMODEL \
     --batch_size 16 \
-    --mean_center
+    --dev_size 1024 \
+    --feat_dim $FEATLEN \
+    --pretrained \
+    --pretrain \
+    --mean_center \
+    --layerwise_pooling \
+    --verbose
+
 
 # Multi-GPU
-torchrun --nproc_per_node=4 main.py \
-    --tag experiment_name \
-    --train_data data/train \
-    --dev_data data/dev \
-    --batch_size 64 \
+torchrun --nproc_per_node=4 --module idiolex.src.main \
+    --tag $EXPERIMENT_NAME \
+    --pretrain_data $ROOT/data/${LANGUAGE}_${BASEMODELTAG}/train_data \
+    --train_data $ROOT/data/${LANGUAGE}_${BASEMODELTAG}/train_data_with_feats \
+    --dev_data $ROOT/data/${LANGUAGE}_${BASEMODELTAG}/dev_data_with_feats \
+    --base_model $BASEMODEL \
+    --batch_size 16 \
+    --dev_size 1024 \
+    --feat_dim $FEATLEN \
+    --pretrained \
+    --pretrain \
     --mean_center \
-    --layerwise_pooling
+    --layerwise_pooling \
+    --verbose
 ```
 
 ### Evaluation

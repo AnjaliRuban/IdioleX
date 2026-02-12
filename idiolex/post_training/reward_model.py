@@ -4,14 +4,16 @@ This module wraps a trained IdioleX model to provide reward
 signals for post-training.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
+from typing import Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoTokenizer
-
+from src.centering import MeanCenterer
+from src.layer_pool import LayerwiseAttention
 from src.utils import average_pool, last_token_pool
+from transformers import AutoConfig, AutoModel, AutoTokenizer
 
 
 class RewardModel(nn.Module):
@@ -25,8 +27,8 @@ class RewardModel(nn.Module):
         self,
         model: nn.Module,
         tokenizer: AutoTokenizer,
-        embedding_model: Optional[nn.Module] = None,
-        centering_model: Optional[nn.Module] = None,
+        embedding_model: Union[nn.Module, None] = None,
+        centering_model: Union[nn.Module, None] = None,
         max_length: int = 512,
     ) -> None:
         """Initialize the reward model.
@@ -126,9 +128,9 @@ class RewardModel(nn.Module):
         Returns:
             Reward scores of shape [batch_size].
         """
-        assert len(ground_truth) == len(completions), (
-            "Number of ground truth and completions must match"
-        )
+        assert len(ground_truth) == len(
+            completions
+        ), "Number of ground truth and completions must match"
 
         device = next(self.model.parameters()).device
 
@@ -175,7 +177,7 @@ class RewardModel(nn.Module):
     def from_checkpoint(
         cls,
         checkpoint_path: str,
-        device: torch.device | str = "cpu",
+        device: Union[torch.device, str] = "cpu",
     ) -> "RewardModel":
         """Load a reward model from a training checkpoint.
 
@@ -186,22 +188,20 @@ class RewardModel(nn.Module):
         Returns:
             Initialized RewardModel.
         """
-        from transformers import AutoConfig, AutoModel
-
-        from src.centering import MeanCentererDDP
-        from src.layer_pool import LayerwiseAttention
-
-        checkpoint = torch.load(checkpoint_path, weights_only=False, map_location=device)
+        checkpoint = torch.load(
+            checkpoint_path, weights_only=False, map_location=device
+        )
         args = checkpoint["args"]
 
         # Load tokenizer and model
-        tokenizer = AutoTokenizer.from_pretrained(args.txt_model)
+        tokenizer = AutoTokenizer.from_pretrained(args.base_model)
 
-        config = AutoConfig.from_pretrained(args.txt_model)
+        config = AutoConfig.from_pretrained(args.base_model)
         config.output_hidden_states = True
 
-        model = AutoModel.from_config(config).to(device)
+        model = AutoModel.from_config(config)
         model.load_state_dict(checkpoint["model"])
+        model = model.to(device)
 
         # Load optional components
         embedding_model = None
@@ -212,12 +212,12 @@ class RewardModel(nn.Module):
 
         centering_model = None
         if args.mean_center and checkpoint.get("centering_model"):
-            centering_model = MeanCentererDDP(dim=config.hidden_size).to(device)
+            centering_model = MeanCenterer(dim=config.hidden_size).to(device)
             centering_model.load_state_dict(checkpoint["centering_model"])
 
         return cls(
-            txt_model=model,
-            txt_tokenizer=tokenizer,
+            model=model,
+            tokenizer=tokenizer,
             embedding_model=embedding_model,
             centering_model=centering_model,
         )

@@ -1,7 +1,5 @@
 """Utility functions for embedding operations, loss computation, and metrics."""
 
-import math
-
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -64,13 +62,13 @@ def _mask_fill(
     padding_index: int,
 ) -> torch.Tensor:
     """Mask embeddings at padding positions with a fill value.
-    
+
     Args:
         fill_value: Value to fill at padding positions.
         tokens: Token IDs of shape [batch_size, seq_len].
         embeddings: Token embeddings of shape [batch_size, seq_len, hidden_dim].
         padding_index: Index used for padding tokens.
-    
+
     Returns:
         Masked embeddings with padding positions filled.
     """
@@ -115,19 +113,24 @@ def anchor_on_k(out: torch.Tensor, n: int) -> torch.Tensor:
     return out
 
 
-def get_anchor_indices(mini: bool, n: int) -> torch.Tensor:
+def get_anchor_indices(batch_size: int, mini: bool, n: int) -> torch.Tensor:
     """Get indices for anchor positions in a batch.
 
     Args:
+        batch_size: Number of mini batches.
         mini: If True, use mini batches (size 4), else full batches (size 16).
         n: Offset for each group.
 
     Returns:
         Tensor of anchor indices.
     """
-    batch_size = 4 if mini else 16
+    mini_size = 4 if mini else 16
     return torch.tensor(
-        [i + n for i in range(0, batch_size, batch_size) for _ in range(batch_size)]
+        [
+            i + n
+            for i in range(0, mini_size * batch_size, mini_size)
+            for _ in range(mini_size)
+        ]
     )
 
 
@@ -164,7 +167,9 @@ def margin_ranking_loss(
     input2 = pred_j[mask]
     target = target[mask]
 
-    return F.margin_ranking_loss(input1, input2, target, margin=margin, reduction="mean")
+    return F.margin_ranking_loss(
+        input1, input2, target, margin=margin, reduction="mean"
+    )
 
 
 def mean_reciprocal_rank(

@@ -1,12 +1,12 @@
 """Batch processing for training and evaluation."""
 
-from typing import Optional
+from typing import Union
 
 import torch
 import torch.nn.functional as F
 from sklearn.metrics import ndcg_score
 
-from .utils import (
+from idiolex.src.utils import (
     anchor_on_k,
     average_pool,
     get_anchor_indices,
@@ -16,22 +16,23 @@ from .utils import (
     vicreg_regularizer,
 )
 
+
 def process_batch(
     model: torch.nn.Module,
     batch: dict[str, torch.Tensor],
-    device_id: int | str,
+    device_id: Union[int, str],
     mini: bool = False,
     sigma_margin: float = 0.1,
-    embedding_model: Optional[torch.nn.Module] = None,
-    centering_model: Optional[torch.nn.Module] = None,
+    embedding_model: Union[torch.nn.Module, None] = None,
+    centering_model: Union[torch.nn.Module, None] = None,
     verbose: bool = False,
     eval_mode: bool = False,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    Optional[dict[str, torch.Tensor]],
+    Union[torch.Tensor, None],
+    Union[torch.Tensor, None],
+    Union[dict[str, torch.Tensor], None],
 ]:
     """Process a single batch and compute embeddings, loss, and metrics.
 
@@ -83,10 +84,6 @@ def process_batch(
     else:
         txt_out = F.normalize(raw_out, p=2, dim=-1)
 
-    if verbose and device_id == 0:
-        print(f"Raw Output shape: {raw_out.shape}")
-        print(f"Normalized Output shape: {txt_out.shape}")
-
     if eval_mode:
         return txt_out, raw_out, None, None, None
 
@@ -106,7 +103,7 @@ def process_batch(
     batch_size = txt_out.shape[0] // N
 
     for n in range(N):
-        anchor_idxs = get_anchor_indices(mini, n)
+        anchor_idxs = get_anchor_indices(batch_size, mini, n)
         anchors = txt_out[anchor_idxs].to(device_id)
 
         # Compute similarities using dot product
@@ -131,9 +128,7 @@ def process_batch(
             y_true_no_anchor = y_true[:, 1:]
             y_score_no_anchor = y_score[:, 1:]
 
-            ndcg_scores["ndcg"].append(
-                ndcg_score(y_true_no_anchor, y_score_no_anchor)
-            )
+            ndcg_scores["ndcg"].append(ndcg_score(y_true_no_anchor, y_score_no_anchor))
             ndcg_scores["ndcg@1"].append(
                 ndcg_score(y_true_no_anchor, y_score_no_anchor, k=1)
             )
@@ -149,10 +144,14 @@ def process_batch(
 
     # Aggregate metrics
     metrics = {
-        k: torch.tensor(sum(v) / len(v) if v else 0.0)
+        k: torch.tensor(sum(v) / len(v) if v else 0.0).to(device_id)
         for k, v in ndcg_scores.items()
     }
-    batch_mrr = torch.tensor(sum(batch_mrr) / len(batch_mrr) if batch_mrr else 0.0)
+    batch_mrr = (
+        (sum(batch_mrr) / len(batch_mrr)).to(device_id)
+        if batch_mrr
+        else torch.tensor(0.0).to(device_id)
+    )
 
     total_loss = torch.stack(batch_loss).sum() + 0.25 * var_loss
 

@@ -56,10 +56,13 @@ Filter raw Pushshift Reddit dumps by language.
 # wget https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin
 
 export ROOT=/path/to/repo/root
+export LANGUAGE=arabic
+export LANG_CODES=ar
+
 python preprocessing/filter_reddit_dump.py \
-    --input_dir $ROOT/data/pushshift/Spanish \
-    --output_dir $ROOT/data/raw \
-    --lang_codes es \
+    --input_dir $ROOT/data/pushshift/$LANGUAGE \
+    --output_dir $ROOT/data/$LANGUAGE \
+    --lang_codes $LANG_CODES \
     --fasttext_model lid.176.bin
 ```
 
@@ -71,12 +74,15 @@ python preprocessing/filter_reddit_dump.py \
 Process filtered Reddit data: clean text, tokenize, create splits.
 
 ```bash
+export BASEMODEL=intfloat/multilingual-e5-large
+export BASEMODELTAG=multilingual-e5-large
+
 python preprocessing/preprocess_reddit.py \
-    --input_dir $ROOT/data/raw \
-    --output_dir $ROOT/data/processed \
-    --model bertin-project/bertin-roberta-base-spanish\
-    --dev_users 5 \
-    --test_users 5
+    --input_dir $ROOT/data/${LANGUAGE} \
+    --output_dir $ROOT/data/${LANGUAGE}_${BASEMODELTAG} \
+    --model $BASEMODEL \
+    --dev_users 10 \
+    --test_users 10
 ```
 
 **Input**: JSON files with `{author: [comments]}` structure
@@ -92,7 +98,7 @@ data/processed/
     └── ...
 ```
 
-### 3. add_features.py
+### 3. generate_features.py
 
 Add LLM-generated linguistic feature vectors.
 
@@ -100,17 +106,14 @@ Add LLM-generated linguistic feature vectors.
 export LITELLM_API_KEY=your_key
 export LITELLM_API_BASE_URL=https://api.openai.com/v1  # optional
 
-python preprocessing/add_features.py \
-    --input_dir data/processed/train_data \
-    --output_dir data/processed/train_data_feats \
-    --model gpt-4o-mini \
-    --feature
-    --batch_size 50
+export FEATMODEL=openai/gpt-5-mini
+export SPLIT=train 
 
-python preprocessing/add_features.py \
-    --input_dir $ROOT/data/processed/dev_data \
-    --output_dir $ROOT/data/processed/dev_data_feats \
-    --model gpt-4o-mini \
+python preprocessing/generate_features.py \
+    --input_dir $ROOT/data/${LANGUAGE}_${BASEMODELTAG}/${SPLIT}_data \
+    --output_dir $ROOT/data/${LANGUAGE}_${BASEMODELTAG}/${SPLIT}_data_with_feats \
+    --model $FEATMODEL \
+    --features $ROOT/idiolex/preprocessing/feature_list/$LANGUAGE.json
     --batch_size 50
 ```
 
@@ -122,13 +125,13 @@ Hierarchical JSON structure: `[users][comments][sentences]`
 
 ```json
 [
-  [  // User 1
-    [  // Comment 1
-      {
+  [  // User X
+    [  // Comment Y
+      { // Sentence Z
         "user": "username",
         "text": ["word1", "word2", "..."],
         "text_ids": [101, 2003, 102],
-        "feature": [0.1, 0.2, ...]  // optional
+        "feature": [0.1, 0.2, ...]
       }
     ]
   ]

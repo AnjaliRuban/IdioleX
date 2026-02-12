@@ -15,12 +15,12 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
-from src import (
+from idiolex.src import (
     FeatureHead,
+    HierarchicalDataset,
     LayerwiseAttention,
     MeanCenterer,
     ProjectionHead,
-    HierarchicalDataset,
     StandardDataset,
     bce_logits,
     concat_all_gather_no_grad,
@@ -251,11 +251,11 @@ def init_seed(seed: int) -> None:
 def init_logging(args: argparse.Namespace) -> None:
     """Initialize wandb logging."""
     wandb.init(
-        project="dialect-metric",
+        project="IdioleX",
         name=args.tag,
         config={
             "command": f"{sys.executable} {' '.join(sys.argv)}",
-            "model": args.txt_model,
+            "model": args.base_model,
             "lr": args.lr,
             "model_len": args.model_len,
             "batch_size": args.batch_size,
@@ -303,7 +303,7 @@ def init_models(
     if checkpoint:
         model.load_state_dict(checkpoint["model"])
 
-    txt_model = DistributedDataParallel(
+    model = DistributedDataParallel(
         model, device_ids=[device_id], find_unused_parameters=True
     )
 
@@ -313,12 +313,13 @@ def init_models(
     # Initialize optional components
     embedding_model = None
     if args.layerwise_pooling:
-        num_layers = txt_model.module.config.num_hidden_layers + 1
+        num_layers = model.module.config.num_hidden_layers + 1
         embedding_model = LayerwiseAttention(num_layers=num_layers).to(device_id)
         if checkpoint:
             embedding_model.load_state_dict(checkpoint["embedding_model"])
         embedding_model = DistributedDataParallel(
-            embedding_model, device_ids=[device_id], find_unused_parameters=True
+            embedding_model,
+            device_ids=[device_id],  # find_unused_parameters=True
         )
         if not no_grad:
             parameters.extend(embedding_model.parameters())
@@ -331,23 +332,24 @@ def init_models(
         if not no_grad:
             parameters.extend(centering_model.parameters())
 
-    feat_head = FeatureHead(
-        input_dim=config.hidden_size, feat_dim=args.feat_dim
-    ).to(device_id)
-    proj_head = ProjectionHead(input_dim=config.hidden_size, out_dim=256).to(
+    feat_head = FeatureHead(input_dim=config.hidden_size, feat_dim=args.feat_dim).to(
         device_id
     )
+    proj_head = ProjectionHead(input_dim=config.hidden_size, out_dim=256).to(device_id)
     if checkpoint:
         feat_head.load_state_dict(checkpoint["feat_head"])
         proj_head.load_state_dict(checkpoint["proj_head"])
     feat_head = DistributedDataParallel(
-        feat_head, device_ids=[device_id], find_unused_parameters=True
+        feat_head,
+        device_ids=[device_id],  # find_unused_parameters=True
     )
     proj_head = DistributedDataParallel(
-        proj_head, device_ids=[device_id], find_unused_parameters=True
+        proj_head,
+        device_ids=[device_id],  # find_unused_parameters=True
     )
-    if not no_grad:
-        parameters.extend(proj_head.parameters())
+    # if not no_grad:
+    #     parameters.extend(proj_head.parameters())
+    #     parameters.extend(feat_head.paramters())
 
     optimizer = None if parameters is None else torch.optim.Adam(parameters, lr=args.lr)
     if checkpoint and not no_grad:
@@ -457,7 +459,6 @@ def train(
                 supcon_loss = supervised_contrastive(proj_out, w, tau=args.supcon_tau)
                 feature_loss = 0.25 * pred_loss + supcon_loss
                 loss = args.alpha * feature_loss + (1 - args.alpha) * batch_loss
-                
 
             # Backward pass
             optimizer.zero_grad()
@@ -492,9 +493,24 @@ def train(
             args.alpha = max(0, args.alpha - args.beta)
 
             # Validation
-            if i % args.dev_step == 0:
+            if i % args.dev_step == 0 and i > 0:
+                if dist.is_initialized():
+                    dist.barrier(device_ids=[device_id])
+
                 metrics = validate(args, model_dict, dev_data, device_id, world_size)
+
+                if dist.is_initialized():
+                    dist.barrier(device_ids=[device_id])
+
                 model.train()
+                if embedding_model:
+                    embedding_model.train()
+                if centering_model:
+                    centering_model.train()
+                if feat_head:
+                    feat_head.train()
+                if proj_head:
+                    proj_head.train()
 
                 if device_id == 0:
                     wandb.log(
@@ -509,6 +525,12 @@ def train(
                             "patience": patience,
                         }
                     )
+                    if args.verbose:
+                        print("========")
+                        print(
+                            f"VALIDATION | Epoch {epoch} | Step {i}/{len(dataloader)} | Loss: {metrics['loss'].item()} | MRR: {metrics['mrr'].item()}"
+                        )
+                        print("========")
 
                     if metrics["loss"].item() < best_loss:
                         patience = 0
@@ -516,7 +538,9 @@ def train(
                         save_checkpoint(args, model_dict, epoch, i, world_size)
                     else:
                         patience += 1
-                        stop_flag[0] = 1 if pretrain and patience >= args.patience else 0
+                        stop_flag[0] = (
+                            1 if pretrain and patience >= args.patience else 0
+                        )
 
                 if dist.is_initialized():
                     dist.broadcast(stop_flag, src=0)
@@ -534,7 +558,7 @@ def validate(
 
     with torch.no_grad():
         loss, mrr, metrics = evaluate_model(
-            models["model"].module,
+            models["model"],
             data,
             args,
             device_id,
@@ -576,12 +600,8 @@ def save_checkpoint(
             "centering_model": (
                 models["centering_model"].state_dict() if args.mean_center else None
             ),
-            "feat_head": (
-                models["feat_head"].module.state_dict()
-            ),
-            "proj_head": (
-                models["proj_head"].module.state_dict()
-            ),
+            "feat_head": (models["feat_head"].module.state_dict()),
+            "proj_head": (models["proj_head"].module.state_dict()),
             "optimizer": model_dict["optimizer"].state_dict(),
             "args": args,
             "epoch": epoch,
@@ -611,7 +631,7 @@ def run(args: argparse.Namespace) -> None:
         eval_data = StandardDataset(args.dev_data)
         with torch.no_grad():
             loss, mrr, metrics = evaluate_model(
-                model=model_dict["models"]["model"].module,
+                model=model_dict["models"]["model"],
                 dataset=eval_data,
                 args=args,
                 device_id=device_id,
@@ -643,16 +663,29 @@ def run(args: argparse.Namespace) -> None:
         return
 
     # Load datasets
-    train_data = HierarchicalDataset(args.train_data)
-    dev_data = HierarchicalDataset(args.dev_data)
+    train_data = HierarchicalDataset(args.train_data, feat_len=args.feat_dim)
+    dev_data = HierarchicalDataset(args.dev_data, feat_len=args.feat_dim)
 
     # Training phases
-    train(model_dict, train_data, dev_data, args, device_id, world_size, pretrain=True)
 
     if args.pretrain:
         pretrain_data = HierarchicalDataset(args.pretrain_data, feat_len=args.feat_dim)
-        args.model_len = args.model_len * 2
-        train(model_dict, pretrain_data, dev_data, args, device_id, world_size)
+        train(
+            model_dict,
+            pretrain_data,
+            dev_data,
+            args,
+            device_id,
+            world_size,
+            pretrain=True,
+        )
+
+    feat_head = model_dict["models"]["feat_head"]
+    proj_head = model_dict["models"]["proj_head"]
+    model_dict["optimizer"].add_param_group({"params": feat_head.parameters()})
+    model_dict["optimizer"].add_param_group({"params": proj_head.parameters()})
+
+    train(model_dict, train_data, dev_data, args, device_id, world_size)
 
     dist.destroy_process_group()
 

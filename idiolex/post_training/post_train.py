@@ -16,10 +16,13 @@ import os
 
 import torch
 from datasets import load_dataset
+from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
 from post_training.reward_model import RewardModel
+
+os.environ["WANDB_PROJECT"] = "Idiolex Post-train"
 
 
 def parse_args() -> argparse.Namespace:
@@ -118,6 +121,25 @@ def parse_args() -> argparse.Namespace:
         help="Gradient accumulation steps.",
     )
 
+    # Memory Efficiency
+    parser.add_argument(
+        "--use_lora",
+        action="store_true",
+        help="Use LoRA for parameter-efficient fine-tuning.",
+    )
+    parser.add_argument(
+        "--lora_r",
+        type=int,
+        default=16,
+        help="LoRA rank.",
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        type=int,
+        default=32,
+        help="LoRA alpha.",
+    )
+
     return parser.parse_args()
 
 
@@ -136,11 +158,26 @@ def prepare_dataset(args: argparse.Namespace):
     if args.max_samples is not None:
         dataset = dataset.select(range(min(args.max_samples, len(dataset))))
 
+    def ensure_string(example):
+        prompt = example.get("prompt", "")
+        ground_truth = example.get("ground_truth", "")
+        if isinstance(prompt, list):
+            prompt = " ".join(str(p) for p in prompt)
+        elif not isinstance(prompt, str):
+            prompt = str(prompt)
+        if isinstance(ground_truth, list):
+            ground_truth = " ".join(str(g) for g in ground_truth)
+        elif not isinstance(ground_truth, str):
+            ground_truth = str(ground_truth)
+        return {"prompt": prompt, "ground_truth": ground_truth}
+
     # Rename prompt field if needed
     if args.prompt_field != "prompt":
         dataset = dataset.rename_column(args.prompt_field, "prompt")
     if args.ground_truth_field != "ground_truth":
         dataset = dataset.rename_column(args.ground_truth_field, "ground_truth")
+
+    dataset = dataset.map(ensure_string)
 
     # Keep only the prompt and ground_truth fields
     dataset = dataset.select_columns(["prompt", "ground_truth"])
@@ -153,12 +190,14 @@ def main():
     args = parse_args()
 
     # Determine device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    reward_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"Using reward device: {reward_device}")
 
     # Load reward model
     print(f"Loading reward model from: {args.reward_checkpoint}")
-    reward_model = RewardModel.from_checkpoint(args.reward_checkpoint, device=device)
+    reward_model = RewardModel.from_checkpoint(
+        args.reward_checkpoint, device=reward_device
+    )
     reward_fn = reward_model.get_reward_function()
 
     # Load LLM
@@ -169,6 +208,18 @@ def main():
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         device_map="auto" if torch.cuda.is_available() else None,
     )
+
+    if args.use_lora:
+        lora_config = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        )
+
+        llm_model = get_peft_model(llm_model, lora_config)
 
     # Ensure pad token is set
     if llm_tokenizer.pad_token is None:
@@ -191,6 +242,7 @@ def main():
         save_total_limit=2,
         remove_unused_columns=False,
         report_to="wandb",
+        run_name=os.path.basename(args.output_dir),
     )
 
     # Initialize trainer

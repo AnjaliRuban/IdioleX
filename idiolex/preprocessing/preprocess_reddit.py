@@ -19,7 +19,6 @@ import json
 import os
 import random
 import re
-from typing import Optional
 
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -100,7 +99,7 @@ def parse_args() -> argparse.Namespace:
 
 def clean_text(text: str) -> str:
     """Clean a single piece of text.
-    
+
     - Removes URLs
     - Removes HTML entities
     - Normalizes whitespace
@@ -124,11 +123,11 @@ def process_comment(
     min_words: int,
 ) -> list[dict]:
     """Process a single comment into sentence-level data.
-    
+
     Args:
         comment_text: Raw comment text.
         min_words: Minimum words per sentence.
-    
+
     Returns:
         List of sentence dictionaries with 'text' field.
     """
@@ -147,36 +146,36 @@ def process_user(
     min_words: int,
     min_sentences: int,
     min_comments: int,
-) -> Optional[list[list[dict]]]:
+) -> list[list[dict]] | None:
     """Process all comments from a single user.
-    
+
     Args:
         user: Username.
         comments: List of comment dictionaries with 'text' field.
         min_words: Minimum words per sentence.
         min_sentences: Minimum sentences per comment.
         min_comments: Minimum comments per user.
-    
+
     Returns:
         List of comments, where each comment is a list of sentence dicts,
         or None if user doesn't meet minimum requirements.
     """
     if user == "[deleted]":
         return None
-    
+
     processed_comments = []
     for comment in comments:
         text = comment.get("text", "")
         if text in ["[deleted]", "[removed]"]:
             continue
-        
+
         sentences = process_comment(text, min_words)
         if len(sentences) >= min_sentences:
             # Add user info to each sentence
             for sent in sentences:
                 sent["user"] = user
             processed_comments.append(sentences)
-    
+
     if len(processed_comments) >= min_comments:
         return processed_comments
     return None
@@ -188,12 +187,12 @@ def tokenize_data(
     max_length: int,
 ) -> list[list[list[dict]]]:
     """Tokenize all text data.
-    
+
     Args:
         data: Nested list [users][comments][sentences].
         tokenizer: HuggingFace tokenizer.
         max_length: Maximum sequence length.
-    
+
     Returns:
         Same structure with 'text_ids' added to each sentence.
     """
@@ -215,18 +214,18 @@ def process_file(
     args: argparse.Namespace,
 ) -> dict[str, list]:
     """Process a single input file and create splits.
-    
+
     Args:
         input_path: Path to input JSON file.
         tokenizer: HuggingFace tokenizer.
         args: Command line arguments.
-    
+
     Returns:
         Dictionary with 'train', 'dev', 'test' splits.
     """
     with open(input_path) as f:
         raw_data = json.load(f)
-    
+
     # Process all users
     processed_users = []
     for user, comments in tqdm(raw_data.items(), desc="Processing users"):
@@ -239,56 +238,56 @@ def process_file(
         )
         if user_data is not None:
             processed_users.append(user_data)
-    
+
     print(f"  Processed {len(processed_users)} users from {len(raw_data)} total")
-    
+
     # Shuffle and split
     random.shuffle(processed_users)
-    
+
     test_end = args.test_users
     dev_end = test_end + args.dev_users
     train_end = min(dev_end + args.train_users, len(processed_users))
-    
+
     splits = {
         "test_data": processed_users[:test_end],
         "dev_data": processed_users[test_end:dev_end],
         "train_data": processed_users[dev_end:train_end],
-        "pretrain_data": processed_users[dev_end:], # Pretrain set includes train set
+        "pretrain_data": processed_users[dev_end:],  # Pretrain set includes train set
     }
-    
+
     # Tokenize each split
     for split_name, split_data in splits.items():
         print(f"  Tokenizing {split_name}: {len(split_data)} users")
         tokenize_data(split_data, tokenizer, args.max_length)
-    
+
     return splits
 
 
 def main():
     args = parse_args()
     random.seed(args.seed)
-    
+
     # Create output directories
     for split in ["pretrain_data", "train_data", "dev_data", "test_data"]:
         os.makedirs(os.path.join(args.output_dir, split), exist_ok=True)
-    
+
     # Load tokenizer
     print(f"Loading tokenizer: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    
+
     # Process each input file
     for filename in os.listdir(args.input_dir):
-        if not filename.endswith(".json"):
+        if not filename.endswith("_data.json"):
             continue
-        
+
         print(f"\nProcessing {filename}...")
         input_path = os.path.join(args.input_dir, filename)
-        
+
         # Get base name (e.g., "argentina" from "argentina_data.json")
         base_name = filename.replace("_data.json", "").replace(".json", "")
-        
+
         splits = process_file(input_path, tokenizer, args)
-        
+
         # Save splits
         for split_name, split_data in splits.items():
             output_path = os.path.join(args.output_dir, split_name, f"{base_name}.json")

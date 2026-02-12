@@ -1,6 +1,6 @@
 """Layer-wise attention pooling for transformer embeddings."""
 
-from typing import Optional
+from typing import Union
 
 import torch
 import torch.nn as nn
@@ -18,8 +18,8 @@ class LayerwiseAttention(nn.Module):
         self,
         num_layers: int,
         layer_norm: bool = False,
-        layer_weights: Optional[list[float]] = None,
-        dropout: Optional[float] = None,
+        layer_weights: Union[list[float], None] = None,
+        dropout: Union[float, None] = None,
     ) -> None:
         """Initialize the layer-wise attention module.
 
@@ -55,14 +55,12 @@ class LayerwiseAttention(nn.Module):
 
         if self.dropout:
             self.register_buffer("dropout_mask", torch.zeros(num_layers))
-            self.register_buffer(
-                "dropout_fill", torch.empty(num_layers).fill_(-1e20)
-            )
+            self.register_buffer("dropout_fill", torch.empty(num_layers).fill_(-1e20))
 
     def forward(
         self,
         hidden_states: list[torch.Tensor],
-        attention_mask: Optional[torch.Tensor] = None,
+        attention_mask: Union[torch.Tensor, None] = None,
     ) -> torch.Tensor:
         """Combine layer embeddings using learned attention weights.
 
@@ -95,7 +93,9 @@ class LayerwiseAttention(nn.Module):
         normed_weights = torch.split(normed_weights, split_size_or_sections=1)
 
         if not self.layer_norm:
-            combined = sum(w * h for w, h in zip(normed_weights, hidden_states))
+            combined = sum(
+                w * h for w, h in zip(normed_weights, hidden_states)
+            )
             return self.gamma * combined
 
         mask_float = attention_mask.float()
@@ -121,11 +121,8 @@ class LayerwiseAttention(nn.Module):
         mean = tensor_masked.view(batch_size, -1).sum(1)
         mean = (mean / num_elements).view(batch_size, 1, 1)
 
-        variance = (
-            (((tensor_masked - mean) * broadcast_mask) ** 2)
-            .view(batch_size, -1)
-            .sum(1)
-            / num_elements
-        )
+        variance = (((tensor_masked - mean) * broadcast_mask) ** 2).view(
+            batch_size, -1
+        ).sum(1) / num_elements
 
         return (tensor - mean) / torch.sqrt(variance + 1e-12).view(batch_size, 1, 1)

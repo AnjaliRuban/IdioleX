@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-
 from starter_repo.plot_data import create_plot, read_csv_data
 
 
