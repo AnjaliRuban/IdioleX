@@ -20,8 +20,11 @@ import asyncio
 import json
 import os
 
+import litellm
 from litellm import acompletion
 from tqdm import tqdm
+from tqdm.asyncio import tqdm as tqdma
+
 
 # Example dialect features to analyze
 DIALECT_FEATURES = [
@@ -114,12 +117,11 @@ def parse_llm_response(response: str, features: list[str]) -> list[float]:
         List of feature values (floats 0-1).
     """
     try:
-        # Extract JSON from response
-        if "{" in response and "}" in response:
-            json_str = "{" + response.split("{", 1)[1].rsplit("}", 1)[0] + "}"
-            data = json.loads(json_str)
-            return [float(data.get(f, 0.0)) for f in features]
+        data = json.loads(response)
+        data = data["features"]
+        return [float(data.get(f, 0.0)) for f in features]
     except (json.JSONDecodeError, ValueError):
+        print("Json decoding error.")
         pass
 
     # Return zeros on parse failure
@@ -141,11 +143,15 @@ async def analyze_sentence(
     Returns:
         Feature vector as list of floats.
     """
+
     prompt = (
-        f"Analyze the following sentence for dialectal features. "
-        f"Return a JSON object with these features as keys: {', '.join(features)}. "
-        f"Values should be floats between 0.0 and 1.0 indicating feature presence.\n\n"
-        f"Sentence: {sentence}\n\nJSON:"
+        "You are a deterministic feature extractor.\n"
+        "Task: For each feature key, output 1 if the sentence contains an explicit surface cue described by that feature; otherwise output 0.\n"
+        "Use a recall-oriented policy: if the cue is reasonably present, set 1.\n"
+        "Return VALID JSON ONLY with exactly one top-level key: 'features'.\n"
+        "- 'features' maps each feature string EXACTLY (copy verbatim) to 0 or 1.\n"
+        f"Sentence: {sentence}\n"
+        f"Feature keys: {features}\n"
     )
 
     try:
@@ -154,8 +160,7 @@ async def analyze_sentence(
             base_url=os.environ.get("LITELLM_API_BASE_URL"),
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=500,
+            timeout=6000,
         )
         content = response["choices"][0]["message"]["content"].strip()
         return parse_llm_response(content, features)
@@ -180,7 +185,7 @@ async def process_batch(
         List of feature vectors.
     """
     tasks = [analyze_sentence(s, features, model) for s in sentences]
-    return await asyncio.gather(*tasks)
+    return await tqdma.gather(*tasks)
 
 
 async def add_features_to_file(
