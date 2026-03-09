@@ -150,8 +150,8 @@ async def analyze_sentence(
         "Use a recall-oriented policy: if the cue is reasonably present, set 1.\n"
         "Return VALID JSON ONLY with exactly one top-level key: 'features'.\n"
         "- 'features' maps each feature string EXACTLY (copy verbatim) to 0 or 1.\n"
-        f"Sentence: {sentence}\n"
         f"Feature keys: {features}\n"
+        f"Sentence: {sentence}\n"
     )
 
     try:
@@ -255,6 +255,9 @@ async def main_async(args: argparse.Namespace) -> None:
         print(f"\nProcessing {filename}...")
         input_path = os.path.join(args.input_dir, filename)
         output_path = os.path.join(args.output_dir, filename)
+
+        if os.path.exists(output_path):
+            continue # Don't rerun on files that have already been processed
 
         await add_features_to_file(input_path, output_path, features, args)
         print(f"  Saved -> {output_path}")

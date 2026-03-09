@@ -104,12 +104,11 @@ def evaluate_model(
     with torch.no_grad():
         for i, batch in enumerate(dataloader):
             if args.evaluate:
-                txt_out, raw_out, _, _, _, _ = process_batch(
+                txt_out, raw_out, _, _, _ = process_batch(
                     model=model,
                     batch=batch,
                     embedding_model=embedding_model,
                     centering_model=centering_model,
-                    nu=args.nu,
                     device_id=device_id,
                     eval_mode=True,
                     verbose=args.verbose,
@@ -119,7 +118,7 @@ def evaluate_model(
                         {
                             "idx": batch["idxs"][i],
                             "tags": batch["tags"][i],
-                            "input_ids": batch["input_ids"][i].cpu().tolist(),
+                            "sentence": batch["sentences"][i],
                             "txt_out": t.cpu().tolist(),
                             "raw_out": r.cpu().tolist(),
                         }
@@ -184,12 +183,13 @@ def evaluate_model(
                 if args.dev_size is not None and i >= args.dev_size:
                     break
 
+    if args.evaluate:
+        return outputs
+
     avg_loss = torch.mean(torch.tensor(loss_values)).to(device_id)
     avg_mrr = torch.mean(torch.tensor(mrr_values)).to(device_id)
     avg_metrics = {
         k: torch.mean(torch.tensor(v)).to(device_id) for k, v in all_metrics.items()
     }
 
-    if args.evaluate:
-        return outputs
     return avg_loss, avg_mrr, avg_metrics

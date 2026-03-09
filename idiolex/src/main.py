@@ -5,6 +5,7 @@ import json
 import os
 import random
 import sys
+import datetime
 
 import numpy as np
 import torch
@@ -237,7 +238,7 @@ def parse_args() -> argparse.Namespace:
 def setup_distributed() -> None:
     """Initialize distributed training environment."""
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-    init_process_group(backend="nccl")
+    init_process_group(backend="gloo")
 
 
 def init_seed(seed: int) -> None:
@@ -279,11 +280,17 @@ def init_models(
 ) -> dict:
     """Initialize all models and optimizer."""
     checkpoint = None
+    evaluate = args.evaluate
     if args.checkpoint:
         checkpoint = torch.load(args.checkpoint, weights_only=False)
         checkpoint_id = args.checkpoint
+        dev_data = args.dev_data
+        tag = args.tag
         args = checkpoint["args"]
         args.checkpoint = checkpoint_id
+        args.evaluate = evaluate
+        args.dev_data = dev_data
+        args.tag = tag
 
     parameters = [] if not no_grad else None
 
@@ -295,13 +302,16 @@ def init_models(
     config.output_hidden_states = True
 
     if args.pretrained:
-        model = AutoModel.from_pretrained(args.base_model).to(device_id)
-        model.config.output_hidden_states = True
+         model = AutoModel.from_pretrained(args.base_model).to(device_id)
+         model.config.output_hidden_states = True
     else:
-        model = AutoModel.from_config(config).to(device_id)
+         model = AutoModel.from_config(config).to(device_id)
 
     if checkpoint:
         model.load_state_dict(checkpoint["model"])
+
+    if dist.is_initialized():
+        dist.barrier(device_ids=[device_id])
 
     model = DistributedDataParallel(
         model, device_ids=[device_id], find_unused_parameters=True
@@ -347,15 +357,17 @@ def init_models(
         proj_head,
         device_ids=[device_id],  # find_unused_parameters=True
     )
-    # if not no_grad:
-    #     parameters.extend(proj_head.parameters())
-    #     parameters.extend(feat_head.paramters())
 
     optimizer = None if parameters is None else torch.optim.Adam(parameters, lr=args.lr)
     if checkpoint and not no_grad:
-        optimizer.load_state_dict(checkpoint["optimizer"])
+        try:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+        except ValueError as e:
+            print(f"Warning: Could not load optimizer state: {e}")
+            print("Continuing with fresh optimizer...")
 
     return {
+        "tokenizer": tokenizer,
         "models": {
             "model": model,
             "embedding_model": embedding_model,
@@ -532,7 +544,9 @@ def train(
                         )
                         print("========")
 
-                    if metrics["loss"].item() < best_loss:
+                    if curr_margin < args.sigma_margin:
+                        save_checkpoint(args, model_dict, epoch, i, world_size)
+                    elif metrics["loss"].item() < best_loss:
                         patience = 0
                         best_loss = metrics["loss"].item()
                         save_checkpoint(args, model_dict, epoch, i, world_size)
@@ -623,14 +637,14 @@ def run(args: argparse.Namespace) -> None:
 
     print(f"World size: {world_size}, Rank: {rank}, Device: {device_id}")
 
-    model_dict = init_models(args, device_id)
+    model_dict = init_models(args, device_id, no_grad=args.evaluate)
     args = model_dict["args"]
 
     # Evaluation mode
     if args.evaluate:
-        eval_data = StandardDataset(args.dev_data)
+        eval_data = StandardDataset(args.dev_data, tokenizer=model_dict["tokenizer"])
         with torch.no_grad():
-            loss, mrr, metrics = evaluate_model(
+            outputs = evaluate_model(
                 model=model_dict["models"]["model"],
                 dataset=eval_data,
                 args=args,
@@ -640,24 +654,16 @@ def run(args: argparse.Namespace) -> None:
             )
 
         # Aggregate across ranks
-        for tensor in [loss, mrr]:
-            dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-            tensor /= world_size
+        combined_outputs = [None] * world_size
+        dist.all_gather_object(combined_outputs, outputs)
 
-        for v in metrics.values():
-            dist.all_reduce(v, op=dist.ReduceOp.SUM)
-            v /= world_size
+        merged_outputs = []
+        for c in combined_outputs:
+            merged_outputs.extend(c)
 
-        if device_id == 0:
-            results = {
-                "loss": loss.item(),
-                "mrr": mrr.item(),
-                **{k: v.item() for k, v in metrics.items()},
-            }
-            print(f"Evaluation results: {results}")
-            os.makedirs("evals", exist_ok=True)
-            with open(f"evals/{args.tag}.json", "w") as f:
-                json.dump(results, f, indent=2)
+        os.makedirs("evals", exist_ok=True)
+        with open(f"evals/{args.tag}.json", "w") as f:
+            json.dump(merged_outputs, f, indent=2, ensure_ascii=False)
 
         dist.destroy_process_group()
         return
@@ -670,6 +676,7 @@ def run(args: argparse.Namespace) -> None:
 
     if args.pretrain:
         pretrain_data = HierarchicalDataset(args.pretrain_data, feat_len=args.feat_dim)
+
         train(
             model_dict,
             pretrain_data,

@@ -1,8 +1,9 @@
 """Data loading utilities for dialect embedding training."""
 
 import argparse
-import json
+import ijson
 import os
+import gc
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any, Union
 
@@ -36,6 +37,8 @@ class HierarchicalDataset(Dataset):
         for filename in files:
             self._load_file(filename)
 
+        gc.collect()
+
     def __len__(self) -> int:
         return len(self.data)
 
@@ -58,42 +61,50 @@ class HierarchicalDataset(Dataset):
 
     def _load_file(self, filename: str) -> None:
         """Load and process a single JSON file."""
-        with open(os.path.join(self.directory, filename)) as f:
-            raw_data = json.load(f)
+
+        # with open(os.path.join(self.directory, filename)) as f:
+        #    raw_data = json.load(f)
 
         idx = len(self.data)
         dialect_data = []
         dialect_idx = [idx, idx]
 
-        for user in raw_data:
-            user_data = []
-            user_idx = [idx, idx]
+        with open(os.path.join(self.directory, filename)) as f:
+            for user in ijson.items(f, "item"):
+                user_data = []
+                user_idx = [idx, idx]
 
-            for comment in user:
-                comment_data = []
-                comment_idx = [idx, idx]
+                for comment in user:
+                    comment_data = []
+                    comment_idx = [idx, idx]
 
-                for line in comment:
-                    comment_data.append(line)
-                    comment_idx[1] += 1
-                    user_idx[1] += 1
-                    dialect_idx[1] += 1
-                    idx += 1
+                    for line in comment:
+                        compact_line = {
+                            "text_ids": line["text_ids"],
+                        }
+                        if "feature" in line and line["feature"]:
+                            compact_line["feature"] = line["feature"]
+                        comment_data.append(compact_line)
+                        comment_idx[1] += 1
+                        user_idx[1] += 1
+                        dialect_idx[1] += 1
+                        idx += 1
 
-                for item in comment_data:
-                    item["comment_idx"] = comment_idx
+                    for item in comment_data:
+                        item["comment_idx"] = comment_idx
 
-                user_data.extend(comment_data)
+                    user_data.extend(comment_data)
 
-            for item in user_data:
-                item["user_idx"] = user_idx
+                for item in user_data:
+                    item["user_idx"] = user_idx
 
-            dialect_data.extend(user_data)
+                dialect_data.extend(user_data)
 
-        for item in dialect_data:
-            item["dialect_idx"] = dialect_idx
+            for item in dialect_data:
+                item["dialect_idx"] = dialect_idx
 
         self.data.extend(dialect_data)
+
 
 
 class StandardDataset(Dataset):
@@ -102,7 +113,7 @@ class StandardDataset(Dataset):
     Loads JSON files containing text data.
     """
 
-    def __init__(self, filepath: str) -> None:
+    def __init__(self, filepath: str, tokenizer=None) -> None:
         """Initialize the dataset.
 
         Args:
@@ -110,20 +121,25 @@ class StandardDataset(Dataset):
         """
         with open(filepath) as f:
             self.data = json.load(f)
+        self.tokenizer = tokenizer
 
     def __len__(self) -> int:
         return len(self.data)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         item = self.data[idx]
+
+        assert "input_ids" in item.keys() or self.tokenizer, "Input has not been pre-tokenized and no tokenizer has been provided."
+
         return {
             "input_ids": (
-                item["input_ids"][0]
-                if len(item["input_ids"]) == 1
-                else item["input_ids"]
+                item["input_ids"]
+                if "input_ids" in item.keys()
+                else self.tokenizer(item["sentence"], truncation=True).input_ids
             ),
             "idx": idx,
             "tags": item.get("tags", []),
+            "sentence": item["sentence"]
         }
 
 
@@ -289,11 +305,13 @@ def make_collator(
 
             idxs = [b["idx"] for b in batch]
             tags = [b["tags"] for b in batch]
+            sentences = [b["sentence"] for b in batch]
             return {
                 "idxs": idxs,
                 "tags": tags,
                 "input_ids": input_ids,
                 "input_attn_mask": input_attn_mask,
+                "sentences": sentences,
             }
     else:
 
