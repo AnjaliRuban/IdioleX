@@ -2,6 +2,7 @@
 classification/main.py — entry point for fine-tuning with optional TF-IDF ensemble.
 """
 
+import os
 import argparse
 from pathlib import Path
 import random
@@ -18,7 +19,7 @@ from .lexical import (
     build_lexical_model,
     lexical_proba, save_lexical, tune_ensemble_weight,
 )
-from .model import load_model
+from .model import load_model, LayerPoolClassifier
 from .train import evaluate, get_probas, run_training
 from .utils import (
     BestModelTracker, compute_metrics, freeze_bottom_layers, freeze_encoder,
@@ -51,6 +52,7 @@ def get_args():
 
     # --- task ---
     p.add_argument("--multi-label",  action="store_true")
+    p.add_argument("--has-unk", action="store_true")
     p.add_argument("--threshold",    type=float, default=0.5,
                    help="Decision threshold for multi-label")
 
@@ -164,7 +166,11 @@ def main():
     )
 
     print("\nLoading best neural checkpoint...")
-    model = AutoModelForSequenceClassification.from_pretrained(out / "best_model").to(device)
+    best_path = str(out / "best_model")
+    if os.path.exists(os.path.join(best_path, "head.pt")):
+        model = LayerPoolClassifier.from_pretrained(best_path, num_classes).to(device)
+    else:
+        model = AutoModelForSequenceClassification.from_pretrained(out / "best_model").to(device)
 
     lex_weight  = None
     vectorizer  = None
@@ -197,7 +203,7 @@ def main():
         save_lexical(str(out), vectorizer, lr_clf, lex_weight)
 
     unk_threshold = None
-    unk_index     = num_classes if not args.multi_label else None
+    unk_index     = None
 
 
     def predict_ensemble(data, loader, threshold=None):
@@ -219,7 +225,8 @@ def main():
     print("\n--- Validation ---")
     preds, P_val = predict_ensemble(val_data, val_loader)
 
-    if not args.multi_label:
+    if not args.multi_label and args.has_unk:
+        unk_index = num_classes
         unk_threshold = tune_unk_threshold(P_val, val_labels, num_classes)
         preds = apply_unk_threshold(P_val, unk_threshold, num_classes)
         results["unk_threshold"] = unk_threshold
@@ -232,8 +239,27 @@ def main():
         test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=2)
 
         print("\n--- Test ---")
-        preds, _ = predict_ensemble(test_data, test_loader, threshold=unk_threshold)
+        preds, P_test = predict_ensemble(test_data, test_loader, threshold=unk_threshold)
         results["test"] = compute_metrics(preds, test_labels, args.multi_label, label_names, unk_index)
+
+        # Save per-sample predictions and class probabilities
+        all_label_names = label_names + ["<UNK>"] if args.has_unk else label_names
+        per_sample = []
+        for i, item in enumerate(test_data):
+            true_label = [all_label_names[j] for j, v in enumerate(test_labels[i]) if v] if args.multi_label else all_label_names[test_labels[i]]
+            pred_label = [all_label_names[j] for j, v in enumerate(preds[i]) if v] if args.multi_label else all_label_names[preds[i]]
+            per_sample.append({
+                "sentence":   item["sentence"],
+                "true_label": true_label,
+                "pred_label": pred_label,
+                "probs":      {all_label_names[j]: round(float(P_test[i, j]), 4)
+                               for j in range(P_test.shape[1])},
+            })
+
+        preds_path = out / "test_predictions.json"
+        with open(preds_path, "w", encoding="utf-8") as f:
+            json.dump(per_sample, f, ensure_ascii=False, indent=2)
+        print(f"  Per-sample predictions saved to {preds_path}")
 
     save_results(str(out), results, args)
     print(f"\nBest val macro F1: {tracker.best_f1:.4f}")

@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     model_group.add_argument(
         "--model_len",
         type=int,
-        default=256,
+        default=512,
         help="Maximum sequence length for input.",
     )
 

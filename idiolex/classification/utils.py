@@ -30,11 +30,11 @@ def freeze_encoder(model):
     """Freeze the entire encoder, training only the classification head."""
     frozen, trainable = 0, 0
     for name, param in model.named_parameters():
-        if name.startswith("classifier") or name.startswith("pooler"):
-            param.requires_grad = True
+        is_head = name.startswith("classifier") or name.startswith("layer_pooler") or name.startswith("pooler")
+        param.requires_grad = is_head
+        if is_head:
             trainable += param.numel()
         else:
-            param.requires_grad = False
             frozen += param.numel()
     print(f"  Frozen encoder: {frozen:,} params | Trainable head: {trainable:,} params")
 
