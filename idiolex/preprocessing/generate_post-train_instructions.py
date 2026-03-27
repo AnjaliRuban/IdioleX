@@ -734,9 +734,9 @@ QUESTION_TOPICS = [
     "arts, music, or literature",
 ]
  
- 
 async def _generate_one(sample: dict, model: str, sem: asyncio.Semaphore) -> dict | None:
     """Generate a single dialectal instruction for one sample."""
+    from litellm import acompletion
  
     api_key = os.environ.get("LITELLM_API_KEY")
     base_url = os.environ.get("LITELLM_API_BASE_URL")
@@ -745,7 +745,8 @@ async def _generate_one(sample: dict, model: str, sem: asyncio.Semaphore) -> dic
     topic = random.choice(QUESTION_TOPICS)
     qwords = ", ".join(DIALECT_QUESTION_PATTERNS.get(sample["dialect"], ["\u0634\u0648", "\u0627\u064a\u0634", "\u0643\u064a\u0641"]))
  
-    prompt = (
+    # Step 1: Generate a question
+    question_prompt = (
         f"You are a native speaker of {dialect_name}.\n"
         f"Below is a text in {dialect_name}. Write a short question (1 sentence) in {dialect_name} "
         f"that someone might ask a chatbot, where this text would be a natural answer.\n\n"
@@ -753,8 +754,7 @@ async def _generate_one(sample: dict, model: str, sem: asyncio.Semaphore) -> dic
         f"- Write ONLY the question, nothing else.\n"
         f"- The question must be in {dialect_name}, NOT Modern Standard Arabic.\n"
         f"- Use dialectal question words like: {qwords}\n"
-        f"- The question should be a question that results in the following text being the answer.\n"
-        f"- Try to frame the question around {topic} if at all possible."
+        f"- The question should be about {topic}.\n"
         f"- Do not copy or rephrase the text below.\n\n"
         f"Text:\n{sample['text']}"
     )
@@ -762,29 +762,56 @@ async def _generate_one(sample: dict, model: str, sem: asyncio.Semaphore) -> dic
     async with sem:
         for attempt in range(3):
             try:
+                # Generate question
                 response = await acompletion(
                     api_key=api_key,
                     base_url=base_url,
                     model=model,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role": "user", "content": question_prompt}],
                     # temperature=0.8,
                     # max_tokens=256,
                     # timeout=6000,
                 )
                 instruction = response.choices[0].message.content.strip()
  
-                # Basic validation: non-empty, not too long, doesn't just repeat the text
                 if not instruction or len(instruction) < 5:
                     return None
-                # Remove any quotes the model might have wrapped around it
                 if instruction.startswith('"') and instruction.endswith('"'):
                     instruction = instruction[1:-1]
                 if instruction.startswith("'") and instruction.endswith("'"):
                     instruction = instruction[1:-1]
  
+                # Step 2: Generate a full answer incorporating the corpus text
+                answer_prompt = (
+                    f"You are a helpful chatbot that ONLY speaks {dialect_name}. "
+                    f"A user asked you: {instruction}\n\n"
+                    f"Write a helpful, detailed answer (3-6 sentences) in {dialect_name}. "
+                    f"You MUST incorporate this phrase naturally in your answer: {sample['text']}\n\n"
+                    f"Rules:\n"
+                    f"- Write ONLY the answer, nothing else.\n"
+                    f"- The answer must be entirely in {dialect_name}, NOT Modern Standard Arabic.\n"
+                    f"- Be informative and conversational, like a native speaker chatting.\n"
+                    f"- Do NOT start with 'Sure' or 'Of course' in any language."
+                )
+ 
+                answer_response = await acompletion(
+                    api_key=api_key,
+                    base_url=base_url,
+                    model=model,
+                    messages=[{"role": "user", "content": answer_prompt}],
+                    # temperature=0.8,
+                    # max_tokens=512,
+                    # timeout=6000,
+                )
+                full_answer = answer_response.choices[0].message.content.strip()
+ 
+                if not full_answer or len(full_answer) < 20:
+                    # Fall back to corpus text if expansion fails
+                    full_answer = sample["text"]
+ 
                 return {
                     "prompt": [{"role": "user", "content": instruction}],
-                    "ground_truth": sample["text"],
+                    "ground_truth": full_answer,
                     "dialect": sample["dialect"],
                     "source": sample["source"],
                     "type": sample.get("type", "monolingual"),
@@ -795,7 +822,7 @@ async def _generate_one(sample: dict, model: str, sem: asyncio.Semaphore) -> dic
                     await asyncio.sleep(2 ** (attempt + 1))
                     continue
                 return None
-    return None
+    return None 
  
  
 def generate_instruction_batch(
@@ -822,6 +849,7 @@ def generate_instruction_batch(
             except (Exception, asyncio.CancelledError) as e:
                 failed += 1
                 pbar.update(1)
+                print("Failed:", e)
                 return None
  
         # Process in chunks to save progress and avoid connection pool exhaustion
@@ -832,7 +860,9 @@ def generate_instruction_batch(
             all_results.extend([r for r in chunk_results if r is not None])
  
             # Save progress every chunk
+            print(output_path, len(all_results))
             if output_path and all_results:
+                print("Saving to", output_path)
                 with open(output_path, "w", encoding="utf-8") as f:
                     for item in all_results:
                         f.write(json.dumps(item, ensure_ascii=False) + "\n")
@@ -963,10 +993,12 @@ def main():
 
     print(f"\nGenerating monolingual Q&A instructions using {args.model}...")
     random.shuffle(all_samples)
+    progress_path = os.path.join(args.output_dir, "progress.jsonl")
     mono_instructions = generate_instruction_batch(
         all_samples,
         model=args.model,
         batch_size=args.batch_size,
+        output_path=progress_path,
     )
     print(f"Generated {len(mono_instructions)} monolingual Q&A instruction pairs")
 
