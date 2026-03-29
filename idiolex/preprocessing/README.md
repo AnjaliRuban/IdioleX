@@ -55,18 +55,15 @@ Filter raw Pushshift Reddit dumps by language.
 # Download fastText language ID model first:
 # wget https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin
 
-export ROOT=/path/to/repo/root
-export LANGUAGE=arabic
-export LANG_CODES=ar
-
 python preprocessing/filter_reddit_dump.py \
-    --input_dir $ROOT/data/pushshift/$LANGUAGE \
-    --output_dir $ROOT/data/$LANGUAGE \
-    --lang_codes $LANG_CODES \
+    --input_dir data/pushshift_dump \
+    --output_dir data/language \
+    --lang_codes lang_code(s) \
     --fasttext_model lid.176.bin
 ```
 
 **Input**: Directory with `.zst` compressed Reddit dumps
+
 **Output**: JSON files with `{author: [comments]}` structure
 
 ### 2. preprocess_reddit.py
@@ -74,19 +71,16 @@ python preprocessing/filter_reddit_dump.py \
 Process filtered Reddit data: clean text, tokenize, create splits.
 
 ```bash
-export BASEMODEL=intfloat/multilingual-e5-large
-export BASEMODELTAG=multilingual-e5-large
-
 python preprocessing/preprocess_reddit.py \
-    --input_dir $ROOT/data/${LANGUAGE} \
-    --output_dir $ROOT/data/${LANGUAGE}_${BASEMODELTAG} \
-    --model $BASEMODEL \
-    --dev_users 10 \
-    --test_users 10
+    --input_dir data/language\
+    --output_dir data/language_model \
+    --model model 
 ```
 
 **Input**: JSON files with `{author: [comments]}` structure
+
 **Output**: Train/dev/test splits in hierarchical format:
+
 ```
 data/processed/
 ├── train_data/
@@ -103,18 +97,13 @@ data/processed/
 Add LLM-generated linguistic feature vectors.
 
 ```bash
-export LITELLM_API_KEY=your_key
-export LITELLM_API_BASE_URL=https://api.openai.com/v1  # optional
-
-export FEATMODEL=openai/gpt-5-mini
-export SPLIT=train 
+export LITELLM_API_KEY="your_key"
 
 python preprocessing/generate_features.py \
-    --input_dir $ROOT/data/${LANGUAGE}_${BASEMODELTAG}/${SPLIT}_data \
-    --output_dir $ROOT/data/${LANGUAGE}_${BASEMODELTAG}/${SPLIT}_data_with_feats \
-    --model $FEATMODEL \
-    --features $ROOT/idiolex/preprocessing/feature_list/$LANGUAGE.json
-    --batch_size 50
+    --input_dir data/language_model/split \
+    --output_dir data/language_model/split_with_feats \
+    --model llm_name \
+    --features idiolex/preprocessing/feature_lists/language.json \
 ```
 
 ## Data Formats
@@ -151,16 +140,3 @@ Flat list of entries:
   }
 ]
 ```
-
-## Requirements
-
-Core:
-- transformers
-- tqdm
-
-For filter_reddit_dump.py:
-- fasttext
-- zstandard
-
-For add_features.py:
-- litellm
